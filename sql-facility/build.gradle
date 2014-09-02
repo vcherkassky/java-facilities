@@ -5,8 +5,9 @@ repositories {
 }
 
 dependencies {
-    compile 'org.slf4j:slf4j-simple:1.6.1'
+    compile 'org.slf4j:slf4j-api:1.6.1'
     compile 'com.google.guava:guava:18.0'
     testCompile 'junit:junit:4.11'
     testCompile 'org.hsqldb:hsqldb:2.3.2'
+    testRuntime 'ch.qos.logback:logback-classic:1.0.13'
 }
