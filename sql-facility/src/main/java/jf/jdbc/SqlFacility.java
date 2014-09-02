@@ -1,6 +1,5 @@
 package jf.jdbc;
 
-import com.codahale.metrics.Timer;
 import com.google.common.base.Joiner;
 import com.google.common.base.Throwables;
 import org.slf4j.Logger;
@@ -61,7 +60,9 @@ public class SqlFacility {
 
     private interface Executable {
         void execute();
+
         boolean failover(RuntimeException exception);
+
         void cleanup();
     }
 
@@ -300,6 +301,8 @@ public class SqlFacility {
         private final T params;
         private final StatementBinder<T> binder;
 
+        private final boolean batchMode;
+
         private PreparedStatement statement;
 
         private ExecutePrepared(ExecutableContext<Connection> context, String sql, T params, StatementBinder<T> binder) {
@@ -307,6 +310,7 @@ public class SqlFacility {
             this.sql = sql;
             this.params = params;
             this.binder = binder;
+            this.batchMode = binder instanceof IterableBinder;
         }
 
         @Override
@@ -319,7 +323,11 @@ public class SqlFacility {
             }
             try {
                 binder.bindParams(params, statement);
-                statement.executeBatch();
+                if (batchMode) {
+                    statement.executeBatch();
+                } else {
+                    statement.execute();
+                }
             } catch (SQLException e) {
                 logDbError(format("Could not execute query with params: %s, %nsql: %s using dataSource %s", params,
                         cutIfTooLong(sql), dataSource), e);
@@ -390,11 +398,7 @@ public class SqlFacility {
                 throw Throwables.propagate(e);
             }
             try {
-                Timer.Context executeQryTime = time("DB.executeQuery");
-
                 resultSet = statement.executeQuery(sql);
-
-                executeQryTime.close();
             } catch (SQLException e) {
                 log.error(format("Could not execute query \"%s\" using dataSource %s", cutIfTooLong(sql), dataSource), e);
                 throw Throwables.propagate(e);
@@ -510,7 +514,7 @@ public class SqlFacility {
         }
 
         public Constructor singleTransaction() {
-            if (! (currentContext instanceof WithConnection)) {
+            if (!(currentContext instanceof WithConnection)) {
                 throw new IllegalStateException("Nested transactions are not supported yet");
             }
             SingleTransaction transaction = new SingleTransaction(rootContext);
@@ -528,14 +532,29 @@ public class SqlFacility {
             return this;
         }
 
-        public<T> ForResult<T> addQuery(String sql, ResultTransformer<T> transformer) {
+        public <T> ForResult<T> addQuery(String sql, ResultTransformer<T> transformer) {
             ExecuteQuery<T> query = new ExecuteQuery<T>(currentContext, sql, transformer);
             currentContext.addExecutable(query);
             return new ForResult<T>(this, query);
         }
 
-        public<T> Constructor addSqlWithParams(String sql, T params, StatementBinder<T> binder) {
+        public <T> Constructor addSqlWithParams(String sql, StatementBinder<T> binder, T params) {
             ExecutePrepared<T> prepared = new ExecutePrepared<T>(currentContext, sql, params, binder);
+            currentContext.addExecutable(prepared);
+            return this;
+        }
+
+        public Constructor addSqlWithParams(String sql, Object... params) {
+            ExecutePrepared<Object> prepared = new ExecutePrepared<Object>(currentContext, sql, params,
+                    new StatementBinder<Object>() {
+                        @Override
+                        public void bindParams(Object paramsArray, PreparedStatement statement) throws SQLException {
+                            Object[] params = (Object[]) paramsArray;
+                            for (int p = 0; p < params.length; p++) {
+                                statement.setObject(p + 1, params[p]);
+                            }
+                        }
+                    });
             currentContext.addExecutable(prepared);
             return this;
         }
